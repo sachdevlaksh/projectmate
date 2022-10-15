@@ -4,11 +4,11 @@ import {
   errorResponse,
   successResponse,
   validationResponse,
-} from '@/lib/http.response';
+} from '@/lib/httpResponse';
 import { prisma } from '@/lib/prisma';
 import bodyValidator from '@/lib/bodyValidator';
 import { postSchema } from '@/schema/index';
-import apiAuth from '@/lib/apiAuth';
+import { getServerAuthSession } from '@/lib/getServerAuthSession';
 
 export default async function handler(
   req: NextApiRequest,
@@ -16,15 +16,14 @@ export default async function handler(
 ) {
   switch (req.method) {
     case 'GET':
+      const { limit, cursorId } = req.query;
+      const projectLimit: number = Number(limit) || 10;
       try {
-        const data = await getAllProject();
-        return successResponse({
-          res,
-          message: '',
-          results: data,
-          statusCode: 200,
-          success: true,
+        const data = await getAllProject({
+          limit: projectLimit,
+          cursorId: cursorId ? cursorId.toString() : undefined,
         });
+        return res.json(data);
       } catch (error) {
         return errorResponse({
           res,
@@ -36,8 +35,8 @@ export default async function handler(
 
     case 'POST':
       try {
-        const isAuth = await apiAuth(req);
-        if (!isAuth) {
+        const session = await getServerAuthSession({ req, res });
+        if (!session) {
           return errorResponse({
             res,
             message: 'Unauthorized',
@@ -46,21 +45,15 @@ export default async function handler(
           });
         }
         const validatedBody = await bodyValidator(req, postSchema);
-        const {
-          title,
-          description,
-          githubRepository,
-          tags,
-          coverImg,
-          authorId,
-        } = validatedBody;
+        const { title, description, githubRepository, tags, coverImg, email } =
+          validatedBody;
         const data = await addProject({
           title,
           description,
           githubRepository,
           tags,
           coverImg,
-          authorId,
+          email,
         });
         return successResponse({
           res,
@@ -94,11 +87,37 @@ export default async function handler(
   }
 }
 
-async function getAllProject() {
+async function getAllProject(args: { limit: number; cursorId?: string }) {
+  const { limit, cursorId } = args;
   try {
-    const data: Project[] = await prisma.project.findMany({
-      include: { author: true },
-    });
+    let data: Project[];
+
+    const includeOption = {
+      author: {
+        select: {
+          name: true,
+        },
+      },
+    };
+
+    if (cursorId) {
+      data = await prisma.project.findMany({
+        take: limit,
+        skip: 1,
+        cursor: {
+          id: cursorId,
+        },
+        include: includeOption,
+        orderBy: { createdAt: 'desc' },
+      });
+    } else {
+      data = await prisma.project.findMany({
+        take: limit,
+        include: includeOption,
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
     return data;
   } catch (error) {
     throw error;
@@ -111,10 +130,9 @@ async function addProject(args: {
   githubRepository: string;
   tags: string[];
   coverImg: string;
-  authorId: string;
+  email: string;
 }) {
-  const { title, description, githubRepository, tags, coverImg, authorId } =
-    args;
+  const { title, description, githubRepository, tags, coverImg, email } = args;
   try {
     const data = await prisma.project.create({
       data: {
@@ -125,7 +143,7 @@ async function addProject(args: {
         coverImg,
         author: {
           connect: {
-            id: authorId,
+            email: email,
           },
         },
       },
